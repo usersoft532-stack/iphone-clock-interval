@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050505">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="時計">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <title>時計</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif; background: #050505; color: #a6a6a6; font-synthesis: none; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; min-height: 100%; background: #050505; }
+    body { min-height: 100vh; min-height: 100svh; }
+    .recording-bar { position: fixed; z-index: 5; inset: 0 0 auto; height: 5px; background: #e34b4b; box-shadow: 0 0 18px #e34b4b80; opacity: 0; transition: opacity .18s ease; }
+    .recording-bar.active { opacity: 1; }
+    .shell { width: 100%; height: 100vh; height: 100svh; min-height: 560px; padding: max(env(safe-area-inset-top), 18px) 22px max(env(safe-area-inset-bottom), 18px); display: flex; flex-direction: column; }
+    .view { flex: 1; min-height: 0; }
+    .clock-view { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .clock-group { text-align: center; }
+    .clock { margin: 0; color: #aaa; font-size: clamp(72px, 21vw, 112px); font-weight: 750; letter-spacing: -.065em; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .date { margin: 15px 0 0; color: #737373; font-size: 13px; font-weight: 500; letter-spacing: .04em; }
+    .stamp-button { width: min(100%, 320px); min-height: 58px; margin-top: clamp(56px, 10vh, 88px); padding: 15px 24px; border: 0; border-radius: 14px; background: #d0d0d0; color: #111; font: inherit; font-size: 16px; font-weight: 700; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background .15s, transform .12s; }
+    .stamp-button:active { transform: scale(.98); }
+    .records-view { width: min(100%, 620px); margin: 0 auto; padding-top: 30px; display: flex; flex-direction: column; }
+    .records-view[hidden] { display: none; }
+    h1 { margin: 0 0 22px; color: #aaa; font-size: 25px; font-weight: 700; letter-spacing: -.03em; }
+    .list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid #262626; }
+    .record { min-height: 72px; padding: 14px 2px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #222; }
+    .record-info { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+    .time-range { color: #aaa; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .record-date { color: #707070; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .duration { color: #c2c2c2; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .empty { padding: 32px 0; color: #777; font-size: 14px; line-height: 1.8; }
+    .tabs { width: min(100%, 360px); min-height: 56px; display: flex; gap: 4px; padding: 4px; border: 1px solid #242424; border-radius: 15px; background: #101010; }
+    .tabs button { flex: 1; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 11px; background: transparent; color: #777; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .tabs button[aria-selected="true"] { background: #292929; color: #d0d0d0; }
+    @media (max-width: 360px) {
+      .shell { padding-right: 16px; padding-left: 16px; }
+      .clock { font-size: clamp(64px, 20vw, 80px); }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <div class="recording-bar" id="recordingBar" aria-hidden="true"></div>
+  <div class="shell">
+    <main class="view clock-view" id="clockView">
+      <div class="clock-group">
+        <h1 class="clock" id="clock" aria-label="現在時刻">--:--</h1>
+        <p class="date" id="date"></p>
+      </div>
+      <button class="stamp-button" id="stampButton" type="button">計測開始</button>
+    </main>
+    <main class="view records-view" id="recordsView" hidden>
+      <h1>記録</h1>
+      <div class="list" id="recordsList" aria-live="polite"></div>
+    </main>
+    <nav class="tabs" aria-label="ページ切り替え" role="tablist">
+      <button type="button" role="tab" id="clockTab" aria-controls="clockView" aria-selected="true">時計</button>
+      <button type="button" role="tab" id="recordsTab" aria-controls="recordsView" aria-selected="false">記録</button>
+    </nav>
+  </div>
+  <script>
+    (function () {
+      const STORAGE_KEY = "time-interval-records-v1";
+      const clock = document.getElementById("clock");
+      const date = document.getElementById("date");
+      const bar = document.getElementById("recordingBar");
+      const button = document.getElementById("stampButton");
+      const clockView = document.getElementById("clockView");
+      const recordsView = document.getElementById("recordsView");
+      const recordsList = document.getElementById("recordsList");
+      const clockTab = document.getElementById("clockTab");
+      const recordsTab = document.getElementById("recordsTab");
+      const clockFormatter = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+      const dateFormatter = new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
+      const timeFormatter = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+      const recordDateFormatter = new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
+
+      function loadState() {
+        try {
+          const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+          return {
+            lastTapAt: Number.isFinite(saved.lastTapAt) ? saved.lastTapAt : null,
+            records: Array.isArray(saved.records) ? saved.records.filter(function (item) {
+              return item && Number.isFinite(item.timestamp) && Number.isFinite(item.durationMs);
+            }) : []
+          };
+        } catch (_) { return { lastTapAt: null, records: [] }; }
+      }
+      let state = loadState();
+      function saveState() {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* Storage may be unavailable. */ }
+      }
+      function updateClock() {
+        const now = new Date();
+        clock.textContent = clockFormatter.format(now);
+        clock.setAttribute("aria-label", "現在時刻 " + clockFormatter.format(now));
+        date.textContent = dateFormatter.format(now);
+      }
+      function updateStatus() {
+        const measuring = state.lastTapAt !== null;
+        bar.classList.toggle("active", measuring);
+        button.textContent = measuring ? "計測終了" : "計測開始";
+      }
+      function renderRecords() {
+        state = loadState();
+        updateStatus();
+        recordsList.replaceChildren();
+        if (!state.records.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "記録はまだありません。時計に戻って計測してください。";
+          recordsList.append(empty);
+          return;
+        }
+        state.records.forEach(function (item) {
+          const row = document.createElement("div");
+          row.className = "record";
+          const endAt = new Date(item.timestamp);
+          const startAt = new Date(item.timestamp - item.durationMs);
+          const info = document.createElement("div");
+          info.className = "record-info";
+          const range = document.createElement("div");
+          range.className = "time-range";
+          range.textContent = timeFormatter.format(startAt) + " 〜 " + timeFormatter.format(endAt);
+          const date = document.createElement("div");
+          date.className = "record-date";
+          const startDate = recordDateFormatter.format(startAt);
+          const endDate = recordDateFormatter.format(endAt);
+          date.textContent = startDate === endDate ? endDate : startDate + " → " + endDate;
+          info.append(range, date);
+          const duration = document.createElement("div");
+          duration.className = "duration";
+          duration.textContent = (item.durationMs / 60000).toFixed(1) + " 分";
+          row.append(info, duration);
+          recordsList.append(row);
+        });
+      }
+      function showView(view) {
+        const showRecords = view === "records";
+        clockView.hidden = showRecords;
+        recordsView.hidden = !showRecords;
+        clockTab.setAttribute("aria-selected", String(!showRecords));
+        recordsTab.setAttribute("aria-selected", String(showRecords));
+        if (showRecords) renderRecords();
+      }
+      clockTab.addEventListener("click", function () { showView("clock"); });
+      recordsTab.addEventListener("click", function () { showView("records"); });
+      button.addEventListener("click", function () {
+        const pressedAt = Date.now();
+        if (state.lastTapAt === null) {
+          state.lastTapAt = pressedAt;
+        } else {
+          state.records.unshift({ timestamp: pressedAt, durationMs: Math.max(0, pressedAt - state.lastTapAt) });
+          state.lastTapAt = null;
+        }
+        saveState();
+        updateStatus();
+      });
+      window.addEventListener("storage", function () {
+        state = loadState();
+        updateStatus();
+        if (!recordsView.hidden) renderRecords();
+      });
+      updateClock();
+      updateStatus();
+      window.setInterval(updateClock, 1000);
+      if (window.location.hash === "#records") showView("records");
+    }());
+  </script>
+</body>
+</html>
+
